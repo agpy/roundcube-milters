@@ -14,19 +14,23 @@
 from __future__ import print_function
 
 import StringIO
-import sys
 import os
 import ConfigParser
 from socket import AF_INET6
 from multiprocessing import Process as Thread, Queue
-import psycopg2
+import mysql.connector
 
 import Milter
 from Milter.utils import parse_addr
 
+# setup utf-8
+import sys
+reload(sys)
+sys.setdefaultencoding('utf-8')
+
 # Constants related to the systemd service
-SOCKET_PATH = "/var/spool/postfix/private/milter-rc-abook.socket"
-PID_FILE_PATH = "/run/milter-rc-abook/main.pid"
+#SOCKET_PATH = "/var/spool/postfix/private/milter-rc-abook.socket"
+PID_FILE_PATH = "/var/run/milter-rc-abook/main.pid"
 
 GlobalLogQueue = Queue(maxsize=100) # type: Queue[str]
 
@@ -36,6 +40,9 @@ configParser.read(configFilePath)
 
 def searchInRoundCube(fromAddress, recipients, debug, dbConnection):
     """Search for an address in the RoundCube database."""
+    if debug:
+        print(
+            "Search for an address in the RoundCube database. from: {}, recipients: {}".format(fromAddress, recipients))
 
     try:
         # Nothing found
@@ -48,30 +55,40 @@ def searchInRoundCube(fromAddress, recipients, debug, dbConnection):
         for rec in recipients:
             parts = parse_addr(rec[0])
             uid = parts[0]
+            email = '@'.join(parse_addr(rec[0]))
+            email = email.lower()
 
             # First, get all the address books from this user
             tablesCursor = dbConnection.cursor()
             abQuery = ("select cg.name from contacts as c"
-                       " left join contactgroupmembers as cgm"
+                       " join contactgroupmembers as cgm"
                        " on cgm.contact_id = c.contact_id"
-                       " left join contactgroups as cg"
+                       " join contactgroups as cg"
                        " on cg.contactgroup_id=cgm.contactgroup_id"
-                       " left join users as u"
+                       " join users as u"
                        " on u.user_id = c.user_id"
-                       " where u.username='{}' and "
-                       " c.words like '%{}%' and"
-                       " c.del = 0"
-                       .format(uid, fromAddress))
+                       " where u.username='{}' and"
+                       " c.vcard like '%{}%' and"
+                       " c.del = 0 and cg.del = 0"
+                       .format(email, fromAddress))
+            if debug:
+                GlobalLogQueue.put("Query: '{}'".format(abQuery))
 
             tablesCursor.execute(abQuery)
 
             abooks = tablesCursor.fetchall()
+
+            if debug:
+                GlobalLogQueue.put("Total records found: {}".format(len(abooks)))
 
             # End to search in this recipient
             tablesCursor.close()
 
             # Store the address book name, or "default" when no name
             for abResult in abooks:
+                if debug:
+                    GlobalLogQueue.put("abResult: '{}'".format(abResult))
+
                 # Get the first cell as a result
                 abName = abResult[0]
 
@@ -97,18 +114,26 @@ def searchInRoundCube(fromAddress, recipients, debug, dbConnection):
 
 class MarkAddressBookMilter(Milter.Base):
     """Milter to search the sender address in RoundCube recipient's address books."""
-
-    # A new instance with each new connection.
+ 
+# A new instance with each new connection.
     def __init__(self):
 
         # Integer incremented with each call.
         self.id = Milter.uniqueID()
 
-        user = configParser.get('postgres', 'user')
-        password = configParser.get('postgres', 'password')
-        dbName = configParser.get('postgres', 'dbName')
-        connectUrl = "postgresql://{}:{}@127.0.0.1:5432/{}"
-        self.dbConnection = psycopg2.connect(connectUrl.format(user, password, dbName))
+        # mysql
+        user = configParser.get('mysql', 'user')
+        password = configParser.get('mysql', 'password')
+        dbName = configParser.get('mysql', 'dbName')
+        connectUrl = "mysql://{}:{}@localhost/{}"
+        # self.dbConnection = mysql.connector.connect(connectUrl.format(user, password, dbName))
+        config = {
+            'user': user,
+            'password': password,
+            'database': dbName,
+            'host': '127.0.0.1'
+        }
+        self.dbConnection = mysql.connector.connect(**config)
 
         self.debug = configParser.getboolean('main', 'debug')
 
@@ -116,6 +141,7 @@ class MarkAddressBookMilter(Milter.Base):
             self.queueLogMessage("Running in debug mode")
 
         if not self.dbConnection:
+            print("Cannot open RoundCube database")
             raise "Cannot open RoundCube database"
 
     # Should be executed at the end of a message parsing
@@ -190,8 +216,10 @@ class MarkAddressBookMilter(Milter.Base):
         # Include all the sources in the same header, joined by coma
         sources = searchInRoundCube(self.mailFrom, self.recipients, self.debug, self.dbConnection)
 
-        if sources:
-            self.addheader("X-AddressBook", ','.join(sources))
+         if sources:
+            sourceList = ','.join(sources)
+            print("Source list: '{}'".format(sourceList))
+            self.addheader("X-AddressBook", sourceList)
 
         return Milter.ACCEPT
 
@@ -234,13 +262,16 @@ def main():
         timeout = 600
 
         # Register to have the Milter factory create new instances
+        print("Register to have the Milter factory create new instances")
         Milter.factory = MarkAddressBookMilter
 
         # For this milter, we only add headers
+        print("For this milter, we only add headers")
         flags = Milter.ADDHDRS
         Milter.set_flags(flags)
 
         # Get the parent process ID and remember it
+        print("Get the parent process ID and remember it")
         pid = os.getpid()
         with open(PID_FILE_PATH, "w") as pidFile:
             pidFile.write(str(pid))
@@ -250,10 +281,13 @@ def main():
         sys.stdout.flush()
 
         # Start the background thread
+        print("Start the background thread")
+        socketPath = configParser.get('main', 'socketPath')
         Milter.runmilter("milter-rc-abook", SOCKET_PATH, timeout)
         GlobalLogQueue.put(None)
 
         #  Wait until the logging thread terminates
+        print("Wait until the logging thread terminates")
         lgThread.join()
 
         # Log the end of process
