@@ -126,7 +126,6 @@ class MarkAddressBookMilter(Milter.Base):
         password = configParser.get('mysql', 'password')
         dbName = configParser.get('mysql', 'dbName')
         connectUrl = "mysql://{}:{}@localhost/{}"
-        # self.dbConnection = mysql.connector.connect(connectUrl.format(user, password, dbName))
         config = {
             'user': user,
             'password': password,
