@@ -5,12 +5,13 @@ Description=RoundCube address book search and tag milter service
 Type=simple
 User=postfix
 Group=postfix
-ExecStart=/usr/local/bin/milter-rc-abook.py
+ExecStart=/usr/bin/python2 /etc/postfix/milter-abook-mysql.py
 StandardOutput=syslog
 StandardError=syslog
 Restart=on-failure
-PIDFile=/run/milter-rc-abook/main.pid
-WorkingDirectory=/run/milter-rc-abook
+PIDFile=/var/run/milter-rc-abook/main.pid
+WorkingDirectory=/var/run/milter-rc-abook
+RuntimeDirectory=milter-rc-abook
 
 [Install]
 WantedBy=default.target
