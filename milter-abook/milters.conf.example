@@ -1,6 +1,7 @@
 # RoundCube milters configuration
 [main]
 debug=True
+socketPath=inet:31313@127.0.0.1
 
 # This account should have read-only only to the tables in the roundcube database
 [postgres]
